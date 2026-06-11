@@ -39,7 +39,7 @@ const DRIVE_STATUS_CONFIG: Record<DriveStatus, DriveStatusConfig> = {
   },
   skipped: {
     label: 'Google Drive Not Configured',
-    description: 'Set GOOGLE_DRIVE_ENABLED=true in .env to enable Drive integration.',
+    description: 'Set GOOGLE_DRIVE_ENABLED=true in environment settings to enable Drive integration.',
     color: 'text-gray-500 dark:text-gray-400',
     iconPath: 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636',
   },

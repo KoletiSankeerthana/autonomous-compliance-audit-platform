@@ -94,7 +94,7 @@ class GoogleDriveMCPSource(MCPSource):
         if not cred_path:
             result["message"] = (
                 "GOOGLE_SERVICE_ACCOUNT_FILE is not set. "
-                "Set it in .env and restart the server."
+                "Set it in environment settings and restart the server."
             )
             return result
 

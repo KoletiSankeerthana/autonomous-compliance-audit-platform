@@ -159,12 +159,12 @@ class NotionMCPSource(MCPSource):
         }
 
         if not settings.NOTION_API_TOKEN:
-            result["message"] = "NOTION_API_TOKEN is not set in .env."
+            result["message"] = "NOTION_API_TOKEN is not set in environment settings."
             return result
         result["api_token_set"] = True
 
         if not settings.NOTION_DATABASE_ID:
-            result["message"] = "NOTION_DATABASE_ID is not set in .env."
+            result["message"] = "NOTION_DATABASE_ID is not set in environment settings."
             return result
         result["database_id_set"] = True
 

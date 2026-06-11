@@ -239,7 +239,7 @@ def sync_google_drive(_admin: User = Depends(get_admin)):
             detail=(
                 "Google Drive integration is not configured. "
                 "Set GOOGLE_DRIVE_ENABLED=true, GOOGLE_SERVICE_ACCOUNT_FILE, "
-                "and GOOGLE_DRIVE_FOLDER_ID in .env."
+                "and GOOGLE_DRIVE_FOLDER_ID in environment settings."
             ),
         )
 
@@ -362,7 +362,7 @@ def sync_notion(_admin: User = Depends(get_admin)):
         from fastapi import HTTPException, status as http_status
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Notion integration is not configured. Set NOTION_API_TOKEN and NOTION_DATABASE_ID in .env.",
+            detail="Notion integration is not configured. Set NOTION_API_TOKEN and NOTION_DATABASE_ID in environment settings.",
         )
 
     try:
