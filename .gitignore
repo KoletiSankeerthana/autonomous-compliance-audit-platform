@@ -56,3 +56,11 @@ htmlcov/
 secrets/
 credentials/
 backend/*.json
+
+# Allow configuration JSON files
+!package.json
+!package-lock.json
+!vercel.json
+!tsconfig.json
+!tsconfig.app.json
+!tsconfig.node.json
