@@ -1,0 +1,58 @@
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ChromaDB
+chroma_db/
+chroma/
+
+# Local databases
+*.db
+sqlite.db
+
+# Uploads
+uploads/
+
+# Logs
+*.log
+
+# Google Credentials
+*.json
+service-account.json
+google-credentials.json
+credentials.json
+compliance-ai-*.json
+
+# SSL Keys & Certificates
+*.pem
+*.key
+
+# VS Code
+.vscode/
+
+# Node
+node_modules/
+dist/
+build/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+coverage/
+htmlcov/
+
+# Secrets
+secrets/
+credentials/
+backend/*.json

@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: compliance-ai-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11435
+      - OLLAMA_BASE_URL=http://host.docker.internal:11435
+      - GOOGLE_SERVICE_ACCOUNT_FILE=/app/credentials/service-account.json
+      - DATABASE_URL=postgresql+psycopg://postgres:asdflkj4ce4g4@host.docker.internal:5433/postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - uploads:/app/uploads
+      - chroma_db:/app/chroma_db
+      - mcp_docs:/app/mcp_documents
+      - ./backend/compliance-ai-498415-870bf0a6da98.json:/app/credentials/service-account.json:ro
+    depends_on: []
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+    container_name: compliance-ai-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  uploads:
+  chroma_db:
+  mcp_docs:
