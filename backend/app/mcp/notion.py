@@ -110,6 +110,20 @@ class NotionMCPSource(MCPSource):
         self.last_skipped_count = skipped
 
         logger.info(f"Notion MCP: sync complete — {len(documents)} new pages loaded, {skipped} skipped.")
+
+        try:
+            from app.mcp.sync_tracker import MCPSyncTracker
+            tracker = MCPSyncTracker()
+            tracker.record_sync(
+                source_name="notion",
+                status="Connected",
+                documents_count=len(documents),
+                chunks_count=len(documents)
+            )
+            logger.info(f"SYNC TRACKER UPDATED: notion docs={len(documents)}")
+        except Exception as e:
+            logger.error(f"Failed to update sync tracker: {e}")
+
         return documents
 
     def _get_already_ingested_info(self) -> dict[str, str]:

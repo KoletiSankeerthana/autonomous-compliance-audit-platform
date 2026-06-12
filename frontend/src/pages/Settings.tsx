@@ -112,8 +112,12 @@ function IntegrationsPanel() {
   const syncGdrive = async () => {
     setSyncingGdrive(true)
     try {
-      await integrationsApi.syncGoogleDrive()
-      alert('Google Drive sync successful!')
+      const res = await integrationsApi.syncGoogleDrive()
+      if (res && res.status === 'syncing') {
+        alert('Google Drive sync started in the background! You can check progress on the Dashboard.')
+      } else {
+        alert('Google Drive sync successful!')
+      }
     } catch (err) {
       alert(extractErrorMessage(err) ?? 'Google Drive sync failed.')
     } finally {
@@ -124,8 +128,12 @@ function IntegrationsPanel() {
   const syncNotion = async () => {
     setSyncingNotion(true)
     try {
-      await integrationsApi.syncNotion()
-      alert('Notion sync successful!')
+      const res = await integrationsApi.syncNotion()
+      if (res && res.status === 'syncing') {
+        alert('Notion sync started in the background! You can check progress on the Dashboard.')
+      } else {
+        alert('Notion sync successful!')
+      }
     } catch (err) {
       alert(extractErrorMessage(err) ?? 'Notion sync failed.')
     } finally {

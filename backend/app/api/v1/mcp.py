@@ -4,7 +4,7 @@ POST /api/v1/mcp/sync — trigger sync from all configured MCP sources
 GET  /api/v1/mcp/sources — list configured and available sources
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, BackgroundTasks
 from pydantic import BaseModel
 
 from app.core.dependencies import get_admin
@@ -173,11 +173,42 @@ def get_mcp_stats(_admin: User = Depends(get_admin)):
             elif source_name == "notion":
                 is_connected = NotionMCPSource().is_configured()
                 
+            if source_name == "local_files":
+                last_sync_display = "Recently" if source_metas else "Never"
+            else:
+                try:
+                    from app.mcp.sync_tracker import MCPSyncTracker
+                    tracker = MCPSyncTracker()
+                    tracker_status = tracker.get_stats(source_name)
+                    
+                    status_val = tracker_status.get("status", "")
+                    last_sync_val = tracker_status.get("last_sync", "Never")
+                    
+                    if status_val == "Syncing":
+                        last_sync_display = "Syncing..."
+                    elif status_val == "Failed":
+                        last_sync_display = "Failed"
+                    elif last_sync_val and last_sync_val != "Never":
+                        try:
+                            from datetime import datetime
+                            iso_str = last_sync_val.split("+")[0]
+                            if iso_str.endswith("Z"):
+                                iso_str = iso_str[:-1]
+                            dt = datetime.fromisoformat(iso_str)
+                            last_sync_display = dt.strftime("%b %d, %H:%M UTC")
+                        except Exception:
+                            last_sync_display = last_sync_val
+                    else:
+                        last_sync_display = "Never"
+                except Exception as tracker_exc:
+                    logger.error(f"Failed to read sync tracker for {source_name}: {tracker_exc}")
+                    last_sync_display = "Recently" if source_metas else "Never"
+                
             stats[source_name] = MCPStatsResponse(
                 sources_connected=1 if is_connected else 0,
                 total_documents=len(unique_docs),
                 total_chunks=len(source_metas),
-                last_sync="Recently" if source_metas else "Never"
+                last_sync=last_sync_display
             )
             
     except Exception as exc:
@@ -218,19 +249,75 @@ class GoogleDriveVerifyResponse(BaseModel):
 _google_drive_source = GoogleDriveMCPSource()
 
 
+def run_google_drive_sync_task():
+    try:
+        from app.mcp.sync_tracker import MCPSyncTracker
+        tracker = MCPSyncTracker()
+        tracker.record_sync(
+            source_name="google_drive",
+            status="Syncing",
+            documents_count=0,
+            chunks_count=0
+        )
+
+        documents = _google_drive_source.fetch_documents()
+        skipped_count = getattr(_google_drive_source, 'last_skipped_count', 0)
+        total_found = getattr(_google_drive_source, 'last_total_found', len(documents))
+
+        total_chunks = 0
+        processed = 0
+
+        for doc in documents:
+            try:
+                chunks = chunk_text(doc.content)
+                store_document_chunks(
+                    chunks,
+                    filename=doc.title,
+                    document_type=doc.document_type,
+                    extra_metadata=doc.metadata or {},
+                )
+                total_chunks += len(chunks)
+                processed += 1
+            except Exception as exc:
+                logger.error(
+                    f"Google Drive ingest error [{doc.title}]: {exc}"
+                )
+
+        logger.info(
+            f"Google Drive background sync complete: {processed}/{len(documents)} documents processed, "
+            f"{total_chunks} chunks created."
+        )
+
+        tracker.record_sync(
+            source_name="google_drive",
+            status="Connected",
+            documents_count=total_found,
+            chunks_count=total_chunks
+        )
+    except Exception as exc:
+        logger.error(f"Google Drive background sync error: {exc}", exc_info=True)
+        try:
+            from app.mcp.sync_tracker import MCPSyncTracker
+            tracker = MCPSyncTracker()
+            tracker.record_sync(
+                source_name="google_drive",
+                status="Failed",
+                documents_count=0,
+                chunks_count=0
+            )
+        except Exception:
+            pass
+
+
 @router.post(
     "/google-drive/sync",
     response_model=GoogleDriveSyncResponse,
     summary="Sync PDF documents from the configured Google Drive folder (admin only)",
 )
-def sync_google_drive(_admin: User = Depends(get_admin)):
+def sync_google_drive(background_tasks: BackgroundTasks, _admin: User = Depends(get_admin)):
     """
-    Fetches all PDF files from the configured Google Drive folder,
+    Triggers background sync for all PDF files from the configured Google Drive folder,
     extracts text, chunks it, and stores it in ChromaDB for RAG retrieval.
-
-    Only files not already present in ChromaDB are downloaded (incremental sync).
-    Sub-folders are traversed recursively.
-    Full pagination is used — handles folders with more than 100 files.
     """
     if not _google_drive_source.is_configured():
         from fastapi import HTTPException, status as http_status
@@ -243,55 +330,14 @@ def sync_google_drive(_admin: User = Depends(get_admin)):
             ),
         )
 
-    try:
-        # fetch_documents now returns only the NEW documents
-        # We need the source to tell us how many were skipped
-        # Since fetch_documents returns list[MCPDocument], we can't easily get skipped count
-        # without changing the interface. For now, we'll just return it as 0 if we don't know,
-        # but wait, let's change fetch_documents in google_drive.py first to return skipped.
-        # Actually, let's just return what we have.
-        documents = _google_drive_source.fetch_documents()
-        # Wait, if we want to get the skipped count from the logs, we can just read the class state if we add it.
-        skipped_count = getattr(_google_drive_source, 'last_skipped_count', 0)
-        total_found = getattr(_google_drive_source, 'last_total_found', len(documents))
-    except Exception as exc:
-        logger.error(f"Google Drive sync error: {exc}", exc_info=True)
-        from fastapi import HTTPException, status as http_status
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Google Drive sync failed: {exc}",
-        )
-
-    total_chunks = 0
-    processed = 0
-
-    for doc in documents:
-        try:
-            chunks = chunk_text(doc.content)
-            store_document_chunks(
-                chunks,
-                filename=doc.title,
-                document_type=doc.document_type,
-                extra_metadata=doc.metadata or {},
-            )
-            total_chunks += len(chunks)
-            processed += 1
-        except Exception as exc:
-            logger.error(
-                f"Google Drive ingest error [{doc.title}]: {exc}"
-            )
-
-    logger.info(
-        f"Google Drive sync complete: {processed}/{len(documents)} documents processed, "
-        f"{total_chunks} chunks created."
-    )
+    background_tasks.add_task(run_google_drive_sync_task)
 
     return GoogleDriveSyncResponse(
-        documents_found=total_found,
-        documents_processed=processed,
-        documents_skipped=skipped_count,
-        chunks_created=total_chunks,
-        status="success",
+        documents_found=0,
+        documents_processed=0,
+        documents_skipped=0,
+        chunks_created=0,
+        status="syncing",
     )
 
 
@@ -348,14 +394,72 @@ class NotionVerifyResponse(BaseModel):
 
 _notion_source = NotionMCPSource()
 
+def run_notion_sync_task():
+    try:
+        from app.mcp.sync_tracker import MCPSyncTracker
+        tracker = MCPSyncTracker()
+        tracker.record_sync(
+            source_name="notion",
+            status="Syncing",
+            documents_count=0,
+            chunks_count=0
+        )
+
+        documents = _notion_source.fetch_documents()
+        skipped_count = getattr(_notion_source, 'last_skipped_count', 0)
+        total_found = getattr(_notion_source, 'last_total_found', len(documents))
+
+        total_chunks = 0
+        processed = 0
+
+        for doc in documents:
+            try:
+                chunks = chunk_text(doc.content)
+                store_document_chunks(
+                    chunks,
+                    filename=doc.title,
+                    document_type=doc.document_type,
+                    extra_metadata=doc.metadata or {},
+                )
+                total_chunks += len(chunks)
+                processed += 1
+            except Exception as exc:
+                logger.error(f"Notion ingest error [{doc.title}]: {exc}")
+
+        logger.info(
+            f"Notion background sync complete: {processed}/{len(documents)} documents processed, "
+            f"{total_chunks} chunks created."
+        )
+
+        tracker.record_sync(
+            source_name="notion",
+            status="Connected",
+            documents_count=total_found,
+            chunks_count=total_chunks
+        )
+    except Exception as exc:
+        logger.error(f"Notion background sync error: {exc}", exc_info=True)
+        try:
+            from app.mcp.sync_tracker import MCPSyncTracker
+            tracker = MCPSyncTracker()
+            tracker.record_sync(
+                source_name="notion",
+                status="Failed",
+                documents_count=0,
+                chunks_count=0
+            )
+        except Exception:
+            pass
+
+
 @router.post(
     "/notion/sync",
     response_model=NotionSyncResponse,
     summary="Sync pages from the configured Notion database (admin only)",
 )
-def sync_notion(_admin: User = Depends(get_admin)):
+def sync_notion(background_tasks: BackgroundTasks, _admin: User = Depends(get_admin)):
     """
-    Fetches all pages from the configured Notion database,
+    Triggers background sync for all pages from the configured Notion database,
     extracts text, chunks it, and stores it in ChromaDB for RAG retrieval.
     """
     if not _notion_source.is_configured():
@@ -365,46 +469,14 @@ def sync_notion(_admin: User = Depends(get_admin)):
             detail="Notion integration is not configured. Set NOTION_API_TOKEN and NOTION_DATABASE_ID in environment settings.",
         )
 
-    try:
-        documents = _notion_source.fetch_documents()
-        skipped_count = getattr(_notion_source, 'last_skipped_count', 0)
-        total_found = getattr(_notion_source, 'last_total_found', len(documents))
-    except Exception as exc:
-        logger.error(f"Notion sync error: {exc}", exc_info=True)
-        from fastapi import HTTPException, status as http_status
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Notion sync failed: {exc}",
-        )
-
-    total_chunks = 0
-    processed = 0
-
-    for doc in documents:
-        try:
-            chunks = chunk_text(doc.content)
-            store_document_chunks(
-                chunks,
-                filename=doc.title,
-                document_type=doc.document_type,
-                extra_metadata=doc.metadata or {},
-            )
-            total_chunks += len(chunks)
-            processed += 1
-        except Exception as exc:
-            logger.error(f"Notion ingest error [{doc.title}]: {exc}")
-
-    logger.info(
-        f"Notion sync complete: {processed}/{len(documents)} documents processed, "
-        f"{total_chunks} chunks created."
-    )
+    background_tasks.add_task(run_notion_sync_task)
 
     return NotionSyncResponse(
-        documents_found=total_found,
-        documents_processed=processed,
-        documents_skipped=skipped_count,
-        chunks_created=total_chunks,
-        status="success",
+        documents_found=0,
+        documents_processed=0,
+        documents_skipped=0,
+        chunks_created=0,
+        status="syncing",
     )
 
 @router.get(
