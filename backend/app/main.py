@@ -175,6 +175,28 @@ def on_startup():
     else:
         logger.info("Database connection verified.")
 
+    # Log Google Drive MCP config status on startup
+    import os
+    gdrive_enabled = os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower() in ("1", "true", "yes") or settings.GOOGLE_DRIVE_ENABLED
+    env_enabled = os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower()
+    if env_enabled in ("0", "false", "no"):
+        gdrive_enabled = False
+        
+    gdrive_email = os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+    gdrive_pkey = os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+    gdrive_folder = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip() or settings.GOOGLE_DRIVE_FOLDER_ID
+    gdrive_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or settings.GOOGLE_SERVICE_ACCOUNT_FILE
+    
+    logger.info("----- Google Drive MCP Config Status -----")
+    logger.info(f"GOOGLE_DRIVE_ENABLED loaded: {gdrive_enabled}")
+    logger.info(f"GOOGLE_CLIENT_EMAIL loaded: {bool(gdrive_email)} (value: {gdrive_email or 'None'})")
+    logger.info(f"GOOGLE_PRIVATE_KEY loaded: {bool(gdrive_pkey)}")
+    logger.info(f"GOOGLE_DRIVE_FOLDER_ID loaded: {bool(gdrive_folder)} (value: {gdrive_folder or 'None'})")
+    logger.info(f"GOOGLE_SERVICE_ACCOUNT_FILE loaded: {bool(gdrive_file)} (value: {gdrive_file or 'None'})")
+    if gdrive_file:
+        logger.info(f"GOOGLE_SERVICE_ACCOUNT_FILE exists on disk: {os.path.exists(gdrive_file)}")
+    logger.info("------------------------------------------")
+
     # Bootstrap default admin user if no users exist
     _bootstrap_admin()
 

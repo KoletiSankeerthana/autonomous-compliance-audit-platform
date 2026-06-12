@@ -55,13 +55,40 @@ def health_check(db: Session = Depends(get_db)):
     # 4. Google Drive MCP
     try:
         gdrive = GoogleDriveMCPSource()
+        
+        # Log config variables
+        import os
+        drive_enabled = os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower() in ("1", "true", "yes") or settings.GOOGLE_DRIVE_ENABLED
+        env_enabled = os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower()
+        if env_enabled in ("0", "false", "no"):
+            drive_enabled = False
+            
+        client_email = os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip() or settings.GOOGLE_DRIVE_FOLDER_ID
+        cred_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or settings.GOOGLE_SERVICE_ACCOUNT_FILE
+        
+        logger.info(
+            f"[Google Drive Health] Config status: "
+            f"ENABLED={drive_enabled}, "
+            f"CLIENT_EMAIL={'set' if client_email else 'not set'}, "
+            f"PRIVATE_KEY={'set' if private_key else 'not set'}, "
+            f"FOLDER_ID={'set' if folder_id else 'not set'}, "
+            f"SERVICE_ACCOUNT_FILE={'set' if cred_file else 'not set'}"
+        )
+        if cred_file:
+            logger.info(f"[Google Drive Health] SERVICE_ACCOUNT_FILE path={cred_file}, exists={os.path.exists(cred_file)}")
+
         if gdrive.is_configured():
             res = gdrive.verify_connection()
             health["google_drive"] = "healthy" if res.get("ok") else "error"
+            logger.info(f"[Google Drive Health] Connection verified: {res.get('ok')} | message: {res.get('message')}")
         else:
             health["google_drive"] = "not_configured"
+            logger.info("[Google Drive Health] Status: Not Configured (missing enabled/creds/folder)")
     except Exception as exc:
-        logger.error(f"Health Check - Google Drive Error: {exc}")
+        logger.error(f"Health Check - Google Drive Error: {exc}", exc_info=True)
+        health["google_drive"] = "error"
 
     # 5. Notion MCP
     try:

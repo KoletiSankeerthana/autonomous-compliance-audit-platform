@@ -101,18 +101,82 @@ class DriveUploadService:
             return False
         return bool(settings.GOOGLE_DRIVE_ENABLED)
 
+    def _load_credentials(self, scopes: list[str]):
+        """
+        Loads service account credentials, preferring in-memory env variables
+        (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY) and falling back to the service account file.
+        """
+        import os as _os
+        from google.oauth2 import service_account
+
+        client_email = _os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = _os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        client_id = _os.environ.get("GOOGLE_CLIENT_ID", "").strip() or getattr(settings, "GOOGLE_CLIENT_ID", "").strip()
+
+        if client_email and private_key:
+            # Decode escaped newlines
+            private_key = private_key.replace("\\n", "\n")
+            info = {
+                "type": "service_account",
+                "private_key": private_key,
+                "client_email": client_email,
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+            if client_id:
+                info["client_id"] = client_id
+                
+            project_id = _os.environ.get("GOOGLE_PROJECT_ID", "").strip()
+            if not project_id and "@" in client_email:
+                parts = client_email.split("@")
+                if len(parts) > 1:
+                    domain = parts[1]
+                    if ".iam.gserviceaccount.com" in domain:
+                        project_id = domain.replace(".iam.gserviceaccount.com", "")
+            if project_id:
+                info["project_id"] = project_id
+
+            logger.info(f"Loaded Google credentials in-memory for email: {client_email}")
+            return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+
+        # Fallback to file path
+        cred_path = self._credential_file()
+        if not cred_path:
+            raise ValueError("No Google Drive credentials found in settings or environment variables.")
+        if not _os.path.exists(cred_path):
+            raise FileNotFoundError(f"Service account file not found at path: {cred_path}")
+
+        logger.info(f"Loaded Google credentials from file: {cred_path}")
+        return service_account.Credentials.from_service_account_file(
+            cred_path,
+            scopes=scopes,
+        )
+
     def is_enabled(self) -> bool:
         """
-        Return True if all required configuration is present and the credential
-        file exists on disk. Does NOT verify network connectivity.
+        Return True if all required configuration is present and the credentials
+        are available (file exists on disk or present in env).
         """
+        import os
+        
+        # 1. Check enabled
+        if not self._drive_enabled():
+            return False
+            
+        # 2. Check folder ID
+        if not self._folder_id():
+            return False
+            
+        # 3. Check credentials (file-based OR in-memory variables)
         cred_path = self._credential_file()
-        return bool(
-            self._drive_enabled()
-            and cred_path
-            and os.path.exists(cred_path)
-            and self._folder_id()
-        )
+        if cred_path and os.path.exists(cred_path):
+            return True
+
+        client_email = os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        if client_email and private_key:
+            return True
+
+        return False
 
     # -----------------------------------------------------------------------
     # Drive client
@@ -121,7 +185,6 @@ class DriveUploadService:
     def _build_service(self, scope: str):
         """Build an authenticated Drive v3 API client for the given scope."""
         try:
-            from google.oauth2 import service_account
             from googleapiclient.discovery import build
         except ImportError as exc:
             raise UploadToGoogleDriveError(
@@ -129,15 +192,11 @@ class DriveUploadService:
                 "Run: pip install google-api-python-client google-auth"
             ) from exc
 
-        cred_path = self._credential_file()
-        if not os.path.exists(cred_path):
-            raise UploadToGoogleDriveError(
-                f"Service account file not found: {cred_path}"
-            )
+        try:
+            credentials = self._load_credentials(scopes=[scope])
+        except Exception as exc:
+            raise UploadToGoogleDriveError(f"Google Drive authentication failed: {exc}") from exc
 
-        credentials = service_account.Credentials.from_service_account_file(
-            cred_path, scopes=[scope]
-        )
         return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
     # -----------------------------------------------------------------------

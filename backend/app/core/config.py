@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_FOLDER_ID: str = ""
     # Legacy alias — kept for backwards compat
     GOOGLE_DRIVE_CREDENTIALS_JSON: str = ""
+    GOOGLE_CLIENT_EMAIL: str = ""
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_PRIVATE_KEY: str = ""
 
     NOTION_API_TOKEN: str = ""
     NOTION_DATABASE_ID: str = ""

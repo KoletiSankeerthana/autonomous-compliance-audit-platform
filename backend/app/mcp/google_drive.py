@@ -55,12 +55,90 @@ class GoogleDriveMCPSource(MCPSource):
         )
         return live_path
 
-    def is_configured(self) -> bool:
-        return bool(
-            settings.GOOGLE_DRIVE_ENABLED
-            and self._credential_file()
-            and settings.GOOGLE_DRIVE_FOLDER_ID
+    def _load_credentials(self, scopes: list[str]):
+        """
+        Loads service account credentials, preferring in-memory env variables
+        (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY) and falling back to the service account file.
+        """
+        import os as _os
+        from google.oauth2 import service_account
+
+        client_email = _os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = _os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        client_id = _os.environ.get("GOOGLE_CLIENT_ID", "").strip() or getattr(settings, "GOOGLE_CLIENT_ID", "").strip()
+
+        if client_email and private_key:
+            # Decode escaped newlines
+            private_key = private_key.replace("\\n", "\n")
+            info = {
+                "type": "service_account",
+                "private_key": private_key,
+                "client_email": client_email,
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+            if client_id:
+                info["client_id"] = client_id
+                
+            project_id = _os.environ.get("GOOGLE_PROJECT_ID", "").strip()
+            if not project_id and "@" in client_email:
+                parts = client_email.split("@")
+                if len(parts) > 1:
+                    domain = parts[1]
+                    if ".iam.gserviceaccount.com" in domain:
+                        project_id = domain.replace(".iam.gserviceaccount.com", "")
+            if project_id:
+                info["project_id"] = project_id
+
+            logger.info(f"Loaded Google credentials in-memory for email: {client_email}")
+            return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+
+        # Fallback to file path
+        cred_path = self._credential_file()
+        if not cred_path:
+            raise ValueError("No Google Drive credentials found in settings or environment variables.")
+        if not _os.path.exists(cred_path):
+            raise FileNotFoundError(f"Service account file not found at path: {cred_path}")
+
+        logger.info(f"Loaded Google credentials from file: {cred_path}")
+        return service_account.Credentials.from_service_account_file(
+            cred_path,
+            scopes=scopes,
         )
+
+    def is_configured(self) -> bool:
+        import os as _os
+        
+        # 1. Check enabled
+        enabled = (
+            _os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+            or settings.GOOGLE_DRIVE_ENABLED
+        )
+        env_enabled = _os.environ.get("GOOGLE_DRIVE_ENABLED", "").strip().lower()
+        if env_enabled in ("0", "false", "no"):
+            enabled = False
+            
+        if not enabled:
+            return False
+
+        # 2. Check folder ID
+        folder_id = (
+            _os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+            or settings.GOOGLE_DRIVE_FOLDER_ID
+        )
+        if not folder_id:
+            return False
+
+        # 3. Check credentials (file-based OR in-memory variables)
+        cred_path = self._credential_file()
+        if cred_path and _os.path.exists(cred_path):
+            return True
+
+        client_email = _os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = _os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        if client_email and private_key:
+            return True
+
+        return False
 
     def verify_connection(self) -> dict:
         """
@@ -90,31 +168,17 @@ class GoogleDriveMCPSource(MCPSource):
             or settings.GOOGLE_DRIVE_FOLDER_ID
         )
 
-        # Step 1: credential file
-        if not cred_path:
-            result["message"] = (
-                "GOOGLE_SERVICE_ACCOUNT_FILE is not set. "
-                "Set it in environment settings and restart the server."
-            )
-            return result
-
-        if not _os.path.exists(cred_path):
-            result["message"] = (
-                f"Service account file not found at: {cred_path}. "
-                f"Verify the path is correct and the file exists."
-            )
-            return result
-
-        result["credentials_file_exists"] = True
-
-        # Step 2: load credentials
+        # Step 1 & 2: load credentials
         try:
-            from google.oauth2 import service_account
-            credentials = service_account.Credentials.from_service_account_file(
-                cred_path,
-                scopes=["https://www.googleapis.com/auth/drive.readonly"],
-            )
+            credentials = self._load_credentials(scopes=["https://www.googleapis.com/auth/drive.readonly"])
             result["service_account_loaded"] = True
+            
+            cred_path = self._credential_file()
+            if cred_path and _os.path.exists(cred_path):
+                result["credentials_file_exists"] = True
+            else:
+                result["credentials_file_exists"] = True  # credentials present in env
+                
             logger.info(
                 f"Google Drive verify: credentials loaded for "
                 f"{credentials.service_account_email}"
@@ -122,7 +186,7 @@ class GoogleDriveMCPSource(MCPSource):
         except Exception as exc:
             result["message"] = (
                 f"Service account credentials failed to load: {exc}. "
-                f"Verify the JSON key file is valid."
+                f"Verify your Google credentials settings."
             )
             return result
 
@@ -190,7 +254,11 @@ class GoogleDriveMCPSource(MCPSource):
             )
             return []
 
-        if not os.path.exists(self._credential_file()):
+        client_email = os.environ.get("GOOGLE_CLIENT_EMAIL", "").strip() or getattr(settings, "GOOGLE_CLIENT_EMAIL", "").strip()
+        private_key = os.environ.get("GOOGLE_PRIVATE_KEY", "").strip() or getattr(settings, "GOOGLE_PRIVATE_KEY", "").strip()
+        has_env_creds = bool(client_email and private_key)
+
+        if not has_env_creds and not os.path.exists(self._credential_file()):
             logger.error(
                 f"Google Drive MCP: service account file not found: {self._credential_file()}"
             )
@@ -298,13 +366,8 @@ class GoogleDriveMCPSource(MCPSource):
 
     def _build_drive_service(self):
         """Build an authenticated Google Drive API service using a Service Account."""
-        from google.oauth2 import service_account
         from googleapiclient.discovery import build
-
-        credentials = service_account.Credentials.from_service_account_file(
-            self._credential_file(),
-            scopes=["https://www.googleapis.com/auth/drive.readonly"],
-        )
+        credentials = self._load_credentials(scopes=["https://www.googleapis.com/auth/drive.readonly"])
         return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
     def _list_all_files(
