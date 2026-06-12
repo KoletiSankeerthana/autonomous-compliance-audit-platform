@@ -24,6 +24,7 @@ import os
 import tempfile
 import time
 from typing import Optional
+from app.mcp.sync_tracker import MCPSyncTracker
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -362,7 +363,28 @@ class GoogleDriveMCPSource(MCPSource):
             f"{skipped} skipped (already ingested), "
             f"{len(drive_files) - len(documents) - skipped} failed."
         )
+
+        try:
+            tracker = MCPSyncTracker()
+
+            tracker.record_sync(
+                source_name="google_drive",
+                status="Connected",
+                documents_count=len(documents),
+                chunks_count=len(documents)
+            )
+
+            logger.info(
+                f"SYNC TRACKER UPDATED: docs={len(documents)}"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update sync tracker: {e}"
+            )
+
         return documents
+    
 
     def _build_drive_service(self):
         """Build an authenticated Google Drive API service using a Service Account."""
