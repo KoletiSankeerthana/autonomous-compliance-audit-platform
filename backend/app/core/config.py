@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # API
     # -----------------------------------------------------------------------
     API_V1_PREFIX: str = "/api/v1"
-    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080"
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080,https://autonomous-compliance-audit-platfor.vercel.app"
 
     # -----------------------------------------------------------------------
     # Database (Supabase PostgreSQL)
