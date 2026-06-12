@@ -35,6 +35,9 @@ class MCPSyncTracker:
             json.dump(data, f, indent=2)
 
     def record_sync(self, source_name: str, status: str, documents_count: int, chunks_count: int):
+        print(
+    f"SYNC TRACKER: {source_name} docs={documents_count} chunks={chunks_count}"
+)
         data = self._read()
         if source_name not in data:
             data[source_name] = {}
