@@ -11,6 +11,7 @@ import os
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -59,6 +60,39 @@ app.add_middleware(
 # Global exception handler
 # ---------------------------------------------------------------------------
 
+def _get_cors_headers(request: Request) -> dict:
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        # Fallback check for allowed origins list
+        if origin in settings.allowed_origins_list:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Access-Control-Allow-Methods"] = "*"
+            headers["Access-Control-Allow-Headers"] = "*"
+        elif "*" in settings.allowed_origins_list:
+            headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Allow-Methods"] = "*"
+            headers["Access-Control-Allow-Headers"] = "*"
+    return headers
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    logger.error(
+        f"HTTP exception: status={exc.status_code} detail={exc.detail} | "
+        f"path={request.url.path} method={request.method}"
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": exc.detail,
+        },
+        headers=_get_cors_headers(request),
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(
@@ -69,9 +103,11 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
+            "success": False,
             "error": "An unexpected error occurred.",
-            "detail": str(exc) if settings.DEBUG else "Internal server error.",
+            "detail": str(exc) if settings.ENVIRONMENT == "development" else "Internal server error.",
         },
+        headers=_get_cors_headers(request),
     )
 
 # ---------------------------------------------------------------------------
