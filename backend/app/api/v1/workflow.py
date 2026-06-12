@@ -82,13 +82,12 @@ def run_workflow(
         if "ChromaDB" in error_msg or "retrieve_documents" in error_msg:
             friendly_error = "Chroma retrieval failed"
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        elif "Ollama" in error_msg or "LLM" in error_msg or "connection" in error_msg:
-            friendly_error = "Ollama connection failed"
+        elif any(kw in error_msg for kw in ["LLM", "provider", "Ollama", "connection", "API key", "groq", "openai", "gemini"]):
+            friendly_error = "LLM provider unavailable"
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             from app.core.config import settings
-            if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
-                logger.warning("Ollama unavailable in Render environment")
-        elif "Database" in error_msg or "persist" in error_msg or "Session" in error_msg:
+            logger.warning(f"LLM failure in workflow: provider={settings.LLM_PROVIDER!r}")
+        elif any(kw in error_msg for kw in ["Database", "persist", "Session"]):
             friendly_error = "Database connection failed"
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
             

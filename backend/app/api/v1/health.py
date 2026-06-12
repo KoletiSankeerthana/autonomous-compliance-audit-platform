@@ -1,3 +1,7 @@
+"""
+System health check endpoint.
+Checks all core components including the configured LLM provider.
+"""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -16,7 +20,7 @@ def health_check(db: Session = Depends(get_db)):
     health = {
         "database": "unhealthy",
         "chromadb": "unhealthy",
-        "ollama": "unhealthy",
+        "llm": "unhealthy",
         "google_drive": "unhealthy",
         "notion": "unhealthy",
         "backend": "healthy",
@@ -38,16 +42,18 @@ def health_check(db: Session = Depends(get_db)):
     except Exception as exc:
         logger.error(f"Health Check - ChromaDB Error: {exc}")
 
-    # 3. Ollama
+    # 3. LLM Provider (replaces Ollama-specific check)
     try:
-        import requests
-        resp = requests.get(settings.OLLAMA_BASE_URL, timeout=2)
-        if resp.status_code == 200:
-            health["ollama"] = "healthy"
+        from app.services.llm_provider import check_llm_health
+        result = check_llm_health()
+        if result["status"] == "healthy":
+            health["llm"] = result["detail"]
         else:
-            logger.error(f"Health Check - Ollama Error: Non-200 status code {resp.status_code}")
+            health["llm"] = f"unhealthy: {result['detail']}"
+            logger.error(f"Health Check - LLM Error: {result['detail']}")
     except Exception as exc:
-        logger.error(f"Health Check - Ollama Error: {exc}")
+        logger.error(f"Health Check - LLM Error: {exc}")
+        health["llm"] = f"unhealthy: {exc}"
 
     # 4. Google Drive MCP
     try:

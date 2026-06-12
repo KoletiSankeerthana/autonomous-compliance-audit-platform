@@ -103,8 +103,25 @@ class Settings(BaseSettings):
         return origins_list
 
     # -----------------------------------------------------------------------
-    # Ollama / LLM
+    # LLM Provider (Groq / OpenAI / Gemini / Ollama)
+    # Set LLM_PROVIDER to: groq | openai | gemini | ollama
+    # ollama = local development only (requires Ollama running at localhost)
     # -----------------------------------------------------------------------
+    LLM_PROVIDER: str = "ollama"   # Override with LLM_PROVIDER=groq in production
+
+    # Groq (recommended for production — free tier at console.groq.com)
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama3-8b-8192"
+
+    # OpenAI
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # Google Gemini
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+
+    # Ollama (local development only — keep for backwards compatibility)
     OLLAMA_MODEL: str = "llama3"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 

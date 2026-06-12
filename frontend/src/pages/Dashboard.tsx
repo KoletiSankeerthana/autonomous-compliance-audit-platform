@@ -82,7 +82,7 @@ export default function DashboardPage() {
             <HealthItem label="FastAPI Backend" status={health?.backend} />
             <HealthItem label="PostgreSQL DB" status={health?.database} />
             <HealthItem label="ChromaDB" status={health?.chromadb} />
-            <HealthItem label="Ollama LLM" status={health?.ollama} />
+            <HealthItem label="AI/LLM Engine" status={health?.llm} />
             <HealthItem label="Google Drive MCP" status={health?.google_drive} />
             <HealthItem label="Notion MCP" status={health?.notion} />
           </div>
@@ -311,8 +311,10 @@ function StatCard({
 }
 
 function HealthItem({ label, status }: { label: string, status?: string }) {
-  const isHealthy = status === 'healthy'
-  const isError = status === 'error' || status === 'unhealthy'
+  // LLM status can be a detailed string like "Groq API reachable — model: llama3-8b-8192"
+  // or "unhealthy: GROQ_API_KEY not set"
+  const isHealthy = status === 'healthy' || (!!status && status.includes('reachable') && !status.startsWith('unhealthy'))
+  const isError = status === 'error' || status === 'unhealthy' || (!!status && status.startsWith('unhealthy'))
   const isNotConfig = status === 'not_configured'
   
   return (

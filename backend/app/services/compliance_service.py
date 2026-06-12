@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime
 
-import ollama
+from app.services.llm_provider import call_llm as _call_llm
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -124,15 +124,22 @@ def calculate_compliance_score(issues: list) -> int:
 # ---------------------------------------------------------------------------
 
 def _call_ollama(prompt: str) -> str:
-    """Execute an Ollama chat completion and return the response content."""
+    """
+    Call the configured LLM provider and return the response text.
+    Name kept for backwards compatibility — internally delegates to call_llm().
+    """
+    from app.core.config import settings
+    logger.info(f"[LLM] Calling provider={settings.LLM_PROVIDER!r}")
     try:
-        response = ollama.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response["message"]["content"]
+        result = _call_llm(prompt)
+        logger.info(f"[LLM] Provider={settings.LLM_PROVIDER!r} responded successfully")
+        return result
     except Exception as exc:
-        logger.error(f"Ollama request failed: {exc}. Using high-quality mock fallback response.", exc_info=True)
+        logger.error(
+            f"[LLM] Provider={settings.LLM_PROVIDER!r} failed: {exc}. "
+            f"Using high-quality mock fallback response.",
+            exc_info=True,
+        )
         # Check if the prompt asks for structured JSON compliance report
         if "Required JSON format" in prompt or "violation" in prompt:
             import json

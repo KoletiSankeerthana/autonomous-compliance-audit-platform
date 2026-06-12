@@ -10,7 +10,7 @@ export interface MCPStatsResponse {
 export interface HealthResponse {
   database: string
   chromadb: string
-  ollama: string
+  llm: string          // e.g. "Groq API reachable — model: llama3-8b-8192"
   google_drive: string
   notion: string
   backend: string

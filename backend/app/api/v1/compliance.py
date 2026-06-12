@@ -74,19 +74,16 @@ def create_compliance_report(
             detail="No regulation documents found. Upload a regulation PDF first.",
         )
 
-    logger.info("Report generation started")
-    logger.info("Ollama request started")
+    logger.info("[LLM] Request started")
     from app.core.config import settings
     try:
         report = generate_compliance_report(policy_chunks, regulation_chunks)
-        logger.info("Ollama response received")
+        logger.info("[LLM] Response received")
     except Exception as exc:
-        logger.error(f"Ollama report generation failed: {exc}", exc_info=True)
-        if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
-            logger.warning("Ollama unavailable in Render environment")
+        logger.error(f"[LLM] Report generation failed: provider={settings.LLM_PROVIDER!r} error={exc}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "Ollama connection failed"}
+            content={"success": False, "error": "LLM provider unavailable"}
         )
 
     if "raw_response" in report:

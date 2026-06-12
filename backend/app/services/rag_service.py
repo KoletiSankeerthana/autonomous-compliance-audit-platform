@@ -7,7 +7,7 @@ import os
 from uuid import uuid4
 
 import chromadb
-import ollama
+from app.services.llm_provider import call_llm as _call_llm
 from pypdf import PdfReader
 
 from app.core.config import settings
@@ -467,9 +467,10 @@ def get_chunks_by_type(document_type: str) -> list[str]:
 
 def generate_answer(question: str, context_chunks: list[str], comparison_mode: bool = False) -> str:
     """
-    Generate a grounded answer using Llama3 via Ollama.
+    Generate a grounded answer using the configured LLM provider.
     The model is instructed to cite only the provided context.
     """
+    from app.core.config import settings
     context = "\n\n".join(context_chunks)
     
     if comparison_mode:
@@ -498,12 +499,11 @@ Instructions:
 
     prompt = f"{sys_prompt}\n\nContext:\n{context}\n\nQuestion:\n{question}"
 
+    logger.info(f"[LLM] generate_answer — provider={settings.LLM_PROVIDER!r}")
     try:
-        response = ollama.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response["message"]["content"]
+        answer = _call_llm(prompt)
+        logger.info(f"[LLM] generate_answer — response received ({len(answer)} chars)")
+        return answer
     except Exception as exc:
-        logger.error(f"Ollama Q&A generation error: {exc}. Using mock fallback response.", exc_info=True)
-        return f"Based on the provided compliance documents and context, here is the answer regarding your query '{question}':\n\n1. **Data Security Controls:** The organization enforces role-based access control (RBAC) and AES-256 encryption. However, multi-factor authentication (MFA) must be enforced for administrative access.\n2. **Disaster Recovery:** Backups are executed daily but need replication across multiple physical regions to meet compliance standards.\n3. **Retention Period:** Records must be retained for at least 7 years in an offline/cold archive.\n\n[File Name: policy.pdf | Page Number: 3 | Chunk ID: qa_f48 | Section Heading: Information Security Controls | Confidence Score: 95.0%]"
+        logger.error(f"[LLM] generate_answer failed: {exc}. Using mock fallback response.", exc_info=True)
+        return f"Based on the provided compliance documents and context, here is the answer regarding your query '{question}':\n\n1. **Data Security Controls:** The organization enforces role-based access control (RBAC) and AES-256 encryption. However, multi-factor authentication (MFA) must be enforced for administrative access.\n2. **Disaster Recovery:** Backups are executed daily but need replication across multiple physical regions to meet compliance standards.\n3. **Retention Period:** Records must be retained for at least 7 years in an offline/cold archive.\n\n[File Name: demo_policy.pdf | Page Number: 3 | Chunk ID: qa_f48 | Section Heading: Information Security Controls | Confidence Score: 95.0%]"

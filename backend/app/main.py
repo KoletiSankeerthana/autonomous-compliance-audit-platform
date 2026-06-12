@@ -136,20 +136,31 @@ def on_startup():
             sanitized_db_url = "postgresql+psycopg://***@***"
     
     logger.info(f"Effective DATABASE_URL: {sanitized_db_url}")
-    logger.info(f"Effective OLLAMA_BASE_URL: {settings.OLLAMA_BASE_URL}")
+    logger.info(f"Effective LLM_PROVIDER: {settings.LLM_PROVIDER}")
+    logger.info(f"Effective GROQ_MODEL: {settings.GROQ_MODEL}")
     logger.info(f"Effective CHROMA_HOST: {settings.CHROMA_HOST}")
     logger.info(f"Effective CHROMA_PORT: {settings.CHROMA_PORT}")
 
-    # Verify Ollama integration
-    if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
-        logger.warning("Ollama unavailable in Render environment")
-        import requests
-        try:
-            resp = requests.get(settings.OLLAMA_BASE_URL, timeout=1.5)
-            if resp.status_code != 200:
-                logger.warning("Ollama connection status: non-200")
-        except Exception as exc:
-            logger.warning(f"Ollama connection check failed: {exc}")
+    # Log LLM provider configuration
+    provider = settings.LLM_PROVIDER.lower().strip()
+    if provider == "groq":
+        key_set = bool(settings.GROQ_API_KEY)
+        logger.info(f"LLM Provider: Groq | Model: {settings.GROQ_MODEL} | API key set: {key_set}")
+        if not key_set:
+            logger.warning("GROQ_API_KEY is not set — LLM calls will fail in production. Set it in Render env vars.")
+    elif provider == "openai":
+        key_set = bool(settings.OPENAI_API_KEY)
+        logger.info(f"LLM Provider: OpenAI | Model: {settings.OPENAI_MODEL} | API key set: {key_set}")
+    elif provider == "gemini":
+        key_set = bool(settings.GEMINI_API_KEY)
+        logger.info(f"LLM Provider: Gemini | Model: {settings.GEMINI_MODEL} | API key set: {key_set}")
+    else:
+        logger.info(f"LLM Provider: Ollama (local dev) | URL: {settings.OLLAMA_BASE_URL} | Model: {settings.OLLAMA_MODEL}")
+        if "localhost" in settings.OLLAMA_BASE_URL or "127.0.0.1" in settings.OLLAMA_BASE_URL:
+            logger.warning(
+                "LLM_PROVIDER=ollama with localhost URL — this will fail in production on Render. "
+                "Set LLM_PROVIDER=groq and GROQ_API_KEY in Render environment variables."
+            )
 
     # Create database tables
     Base.metadata.create_all(bind=engine)

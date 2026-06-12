@@ -320,21 +320,20 @@ def ask_question(
         "where_clause": results.get("where_clause")
     }
 
-    logger.info("Ollama request started")
+    logger.info("[LLM] Request started")
     try:
         answer = generate_answer(
             question=payload.question,
             context_chunks=formatted_chunks,
             comparison_mode=(diagnostics["retrieval_mode"] == "multi_document_comparison")
         )
-        logger.info("Ollama response received")
+        logger.info("[LLM] Response received")
     except Exception as exc:
-        logger.error(f"Ollama request failed: {exc}", exc_info=True)
-        if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
-            logger.warning("Ollama unavailable in Render environment")
+        from app.core.config import settings
+        logger.error(f"[LLM] Request failed: provider={settings.LLM_PROVIDER!r} error={exc}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "Ollama connection failed"}
+            content={"success": False, "error": "LLM provider unavailable"}
         )
 
     return QuestionResponse(
