@@ -5,6 +5,7 @@ GET  /api/v1/workflow/status/{id} — retrieve completed workflow result
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -53,24 +54,47 @@ def run_workflow(
 
     Returns the final report summary including the saved audit report ID.
     """
-    logger.info(
-        f"Workflow triggered: user_id={current_user.id} "
-        f"policy_type={payload.policy_type} "
-        f"regulation_type={payload.regulation_type}"
-    )
+    logger.info("Request received: Run Workflow")
+    logger.info("Authentication validated")
 
-    final_state: WorkflowState = run_compliance_workflow(
-        policy_type=payload.policy_type,
-        regulation_type=payload.regulation_type,
-        user_id=current_user.id,
-        db=db,
-    )
+    logger.info("Report generation started")
+    try:
+        final_state: WorkflowState = run_compliance_workflow(
+            policy_type=payload.policy_type,
+            regulation_type=payload.regulation_type,
+            user_id=current_user.id,
+            db=db,
+        )
+    except Exception as e:
+        logger.exception("Workflow failed")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": f"Workflow failed: {str(e)}"}
+        )
 
     if final_state.get("error"):
-        logger.error(f"Workflow failed: {final_state['error']}")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=final_state["error"],
+        error_msg = final_state["error"]
+        logger.error(f"Workflow failed: {error_msg}")
+        
+        # Categorise/Improve errors:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        friendly_error = error_msg
+        if "ChromaDB" in error_msg or "retrieve_documents" in error_msg:
+            friendly_error = "Chroma retrieval failed"
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif "Ollama" in error_msg or "LLM" in error_msg or "connection" in error_msg:
+            friendly_error = "Ollama connection failed"
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            from app.core.config import settings
+            if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
+                logger.warning("Ollama unavailable in Render environment")
+        elif "Database" in error_msg or "persist" in error_msg or "Session" in error_msg:
+            friendly_error = "Database connection failed"
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            
+        return JSONResponse(
+            status_code=status_code,
+            content={"success": False, "error": friendly_error}
         )
 
     final_report = final_state.get("final_report", {})
@@ -79,6 +103,7 @@ def run_workflow(
         f"Workflow complete: saved_id={final_state.get('saved_report_id')} "
         f"user_id={current_user.id}"
     )
+    logger.info("Report generation completed")
 
     return WorkflowRunResponse(
         success=True,

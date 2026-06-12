@@ -81,6 +81,7 @@ _report_agent = ReportAgent()
 def retrieve_documents(state: WorkflowState) -> WorkflowState:
     """Fetch policy and regulation chunks from ChromaDB."""
     t = time.monotonic()
+    logger.info("Chroma retrieval started")
     logger.info("[retrieve_documents] ENTER")
     try:
         policy_type = state.get("policy_type", "policy")
@@ -113,6 +114,7 @@ def run_compliance_agent(state: WorkflowState) -> WorkflowState:
         return state
 
     t = time.monotonic()
+    logger.info("Ollama request started")
     logger.info("[run_compliance_agent] ENTER")
     try:
         result = _compliance_agent.run(state)
@@ -121,6 +123,7 @@ def run_compliance_agent(state: WorkflowState) -> WorkflowState:
             logger.error(f"[run_compliance_agent] AGENT ERROR: {result['error']}")
             return {**state, "error": result["error"]}
 
+        logger.info("Ollama response received")
         logger.info(f"[run_compliance_agent] EXIT in {time.monotonic()-t:.2f}s")
         return {**state, **result}
 

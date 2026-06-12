@@ -28,6 +28,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
 from fastapi import Query as QueryParam
 
 from app.core.config import settings
@@ -271,12 +272,19 @@ def ask_question(
     using the configured LLM. Sources include all chunk metadata, enabling
     the frontend to display Drive links when available.
     """
-    logger.info(
-        f"Q&A request: user_id={current_user.id} "
-        f"question={payload.question[:100]!r}"
-    )
+    logger.info("Request received: Ask Question")
+    logger.info("Authentication validated")
 
-    results = retrieve_chunks(payload.question)
+    logger.info("Chroma retrieval started")
+    try:
+        results = retrieve_chunks(payload.question)
+    except Exception as exc:
+        logger.error(f"Chroma retrieval failed: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "Chroma retrieval failed"}
+        )
+
     chunks = results.get("documents", [])
     metadatas = results.get("metadata", [])
     distances = results.get("distances", [])
@@ -312,11 +320,22 @@ def ask_question(
         "where_clause": results.get("where_clause")
     }
 
-    answer = generate_answer(
-        question=payload.question,
-        context_chunks=formatted_chunks,
-        comparison_mode=(diagnostics["retrieval_mode"] == "multi_document_comparison")
-    )
+    logger.info("Ollama request started")
+    try:
+        answer = generate_answer(
+            question=payload.question,
+            context_chunks=formatted_chunks,
+            comparison_mode=(diagnostics["retrieval_mode"] == "multi_document_comparison")
+        )
+        logger.info("Ollama response received")
+    except Exception as exc:
+        logger.error(f"Ollama request failed: {exc}", exc_info=True)
+        if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
+            logger.warning("Ollama unavailable in Render environment")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "Ollama connection failed"}
+        )
 
     return QuestionResponse(
         question=payload.question,

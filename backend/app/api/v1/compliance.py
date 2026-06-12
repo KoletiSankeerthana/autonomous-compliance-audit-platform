@@ -8,6 +8,7 @@ DELETE /api/v1/compliance/history/{id} — delete report
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_admin, get_current_user
@@ -48,8 +49,19 @@ def create_compliance_report(
     2. Call the LLM to produce a structured JSON report
     3. Persist to Supabase and return the saved record
     """
-    policy_chunks = get_chunks_by_type("policy")
-    regulation_chunks = get_chunks_by_type("regulation")
+    logger.info("Request received: Generate Compliance Report")
+    logger.info("Authentication validated")
+
+    logger.info("Chroma retrieval started")
+    try:
+        policy_chunks = get_chunks_by_type("policy")
+        regulation_chunks = get_chunks_by_type("regulation")
+    except Exception as exc:
+        logger.error(f"Chroma retrieval failed: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "Chroma retrieval failed"}
+        )
 
     if not policy_chunks:
         raise HTTPException(
@@ -62,7 +74,20 @@ def create_compliance_report(
             detail="No regulation documents found. Upload a regulation PDF first.",
         )
 
-    report = generate_compliance_report(policy_chunks, regulation_chunks)
+    logger.info("Report generation started")
+    logger.info("Ollama request started")
+    from app.core.config import settings
+    try:
+        report = generate_compliance_report(policy_chunks, regulation_chunks)
+        logger.info("Ollama response received")
+    except Exception as exc:
+        logger.error(f"Ollama report generation failed: {exc}", exc_info=True)
+        if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
+            logger.warning("Ollama unavailable in Render environment")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "Ollama connection failed"}
+        )
 
     if "raw_response" in report:
         logger.error(
@@ -76,16 +101,24 @@ def create_compliance_report(
             ),
         )
 
-    saved = crud_audit_report.create_from_dict(
-        db,
-        report=report,
-        user_id=current_user.id,
-    )
+    try:
+        saved = crud_audit_report.create_from_dict(
+            db,
+            report=report,
+            user_id=current_user.id,
+        )
+    except Exception as exc:
+        logger.error(f"Database save compliance report failed: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "Database connection failed"}
+        )
 
     logger.info(
         f"Compliance report saved: id={saved.id} "
         f"risk={saved.risk} user_id={current_user.id}"
     )
+    logger.info("Report generation completed")
 
     import json
 

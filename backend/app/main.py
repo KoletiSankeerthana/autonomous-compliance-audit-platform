@@ -84,6 +84,37 @@ def on_startup():
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"CORS Allowed Origins: {settings.allowed_origins_list}")
 
+    # Verify environment variables
+    db_url = settings.DATABASE_URL
+    sanitized_db_url = db_url
+    if db_url and "@" in db_url:
+        try:
+            prefix, rest = db_url.split("@", 1)
+            subprefix, auth = prefix.rsplit("//", 1)
+            if ":" in auth:
+                username, _ = auth.split(":", 1)
+                sanitized_db_url = f"{subprefix}//{username}:***@{rest}"
+            else:
+                sanitized_db_url = f"{subprefix}//***@{rest}"
+        except Exception:
+            sanitized_db_url = "postgresql+psycopg://***@***"
+    
+    logger.info(f"Effective DATABASE_URL: {sanitized_db_url}")
+    logger.info(f"Effective OLLAMA_BASE_URL: {settings.OLLAMA_BASE_URL}")
+    logger.info(f"Effective CHROMA_HOST: {settings.CHROMA_HOST}")
+    logger.info(f"Effective CHROMA_PORT: {settings.CHROMA_PORT}")
+
+    # Verify Ollama integration
+    if "localhost:11434" in settings.OLLAMA_BASE_URL or "127.0.0.1:11434" in settings.OLLAMA_BASE_URL:
+        logger.warning("Ollama unavailable in Render environment")
+        import requests
+        try:
+            resp = requests.get(settings.OLLAMA_BASE_URL, timeout=1.5)
+            if resp.status_code != 200:
+                logger.warning("Ollama connection status: non-200")
+        except Exception as exc:
+            logger.warning(f"Ollama connection check failed: {exc}")
+
     # Create database tables
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables verified / created.")

@@ -14,7 +14,12 @@ export function extractErrorMessage(error: unknown): string {
 
   // 2. Axios response error with custom body details
   if (isAxiosError(error) && error.response && error.response.data) {
-    const data = error.response.data
+    const data = error.response.data as any
+
+    // 2.0. Custom error field returned by our backend
+    if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string') {
+      return data.error
+    }
 
     // 2.1. FastAPI/Pydantic validation detail array
     if (Array.isArray(data.detail)) {

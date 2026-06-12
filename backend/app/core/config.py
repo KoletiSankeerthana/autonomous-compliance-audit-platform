@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     # -----------------------------------------------------------------------
     CHROMA_DB_PATH: str = "./chroma_db"
     CHROMA_COLLECTION_NAME: str = "documents"
+    CHROMA_HOST: str = "localhost"
+    CHROMA_PORT: int = 8000
 
     # -----------------------------------------------------------------------
     # File Storage
