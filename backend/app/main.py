@@ -82,6 +82,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 def on_startup():
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"CORS Allowed Origins: {settings.allowed_origins_list}")
 
     # Create database tables
     Base.metadata.create_all(bind=engine)

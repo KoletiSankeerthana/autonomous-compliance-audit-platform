@@ -74,7 +74,33 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         """Return ALLOWED_ORIGINS as a Python list for middleware configuration."""
-        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        import os
+        # Fallback support for other common CORS environment variables
+        origins_str = os.getenv("ALLOWED_ORIGINS") or os.getenv("BACKEND_CORS_ORIGINS") or os.getenv("CORS_ORIGINS") or self.ALLOWED_ORIGINS
+        
+        origins_list = []
+        # If it's a JSON array format: e.g., ["origin1", "origin2"]
+        if isinstance(origins_str, str) and origins_str.strip().startswith("[") and origins_str.strip().endswith("]"):
+            import json
+            try:
+                origins = json.loads(origins_str)
+                if isinstance(origins, list):
+                    origins_list = [str(o).strip() for o in origins if o]
+            except Exception:
+                pass
+        
+        if not origins_list:
+            if isinstance(origins_str, list):
+                origins_list = [str(o).strip() for o in origins_str if o]
+            else:
+                origins_list = [o.strip() for o in str(origins_str).split(",") if o.strip()]
+                
+        # Ensure the production Vercel frontend origin is always included
+        prod_origin = "https://autonomous-compliance-audit-platfor.vercel.app"
+        if prod_origin not in origins_list:
+            origins_list.append(prod_origin)
+            
+        return origins_list
 
     # -----------------------------------------------------------------------
     # Ollama / LLM
