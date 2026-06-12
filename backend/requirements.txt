@@ -95,10 +95,12 @@ google-auth-oauthlib==1.2.0
 langgraph>=0.2.0
 notion-client==2.2.1
 ollama==0.2.1
-# LLM Provider SDKs (Groq/OpenAI/Gemini for production on Render)
-groq>=0.9.0
-openai>=1.30.0
-google-generativeai>=0.7.0
+# LLM Provider SDKs — production LLM via LangChain abstractions
+langchain-groq>=0.1.9          # LLM_PROVIDER=groq (PRODUCTION default)
+langchain-core>=0.2.0          # shared LangChain messages/base types
+# Optional providers (install if you switch LLM_PROVIDER)
+# langchain-openai>=0.1.0      # LLM_PROVIDER=openai
+# langchain-google-genai>=1.0  # LLM_PROVIDER=gemini
 reportlab>=4.0.0
 python-docx>=1.0.0
 pdfplumber>=0.11.0

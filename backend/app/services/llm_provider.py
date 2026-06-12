@@ -1,20 +1,22 @@
 """
 LLM Provider Abstraction Layer.
 
-Provides a single `call_llm(prompt)` function that routes to the configured
-provider (Groq, OpenAI, Gemini, or Ollama for local dev) based on the
-LLM_PROVIDER environment variable.
+Exposes two public APIs:
 
-Usage:
-    from app.services.llm_provider import call_llm
+    get_llm()        → returns a LangChain-compatible chat model instance
+                       (ChatGroq for production, OllamaWrapper for local dev)
 
-    response_text = call_llm("Analyse this document for compliance gaps...")
+    call_llm(prompt) → convenience wrapper that calls get_llm().invoke(messages)
+                       and returns the response text as a plain string
 
-Provider selection via env var:
-    LLM_PROVIDER=groq      → Groq API (default for production)
-    LLM_PROVIDER=openai    → OpenAI API
-    LLM_PROVIDER=gemini    → Google Gemini API
-    LLM_PROVIDER=ollama    → Local Ollama (development only)
+Provider selection via LLM_PROVIDER environment variable:
+    LLM_PROVIDER=groq      → ChatGroq via langchain-groq  (PRODUCTION default)
+    LLM_PROVIDER=openai    → ChatOpenAI via langchain-openai
+    LLM_PROVIDER=gemini    → ChatGoogleGenerativeAI via langchain-google-genai
+    LLM_PROVIDER=ollama    → direct ollama SDK  (LOCAL DEVELOPMENT only)
+
+All agents, services, and endpoints import from this module — never from
+individual SDK packages directly.
 """
 
 import time
@@ -25,8 +27,47 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# Provider dispatch
+# Public API — get_llm()
+# ---------------------------------------------------------------------------
+
+
+def get_llm():
+    """
+    Return a LangChain-compatible chat model for the configured provider.
+
+    Supported return types:
+      - groq   → langchain_groq.ChatGroq
+      - openai → langchain_openai.ChatOpenAI  (if installed)
+      - gemini → langchain_google_genai.ChatGoogleGenerativeAI  (if installed)
+      - ollama → _OllamaDirectWrapper (thin wrapper around the ollama SDK)
+
+    Usage::
+
+        llm = get_llm()
+        from langchain_core.messages import HumanMessage
+        response = llm.invoke([HumanMessage(content="Hello")])
+        text = response.content
+
+    Raises:
+        RuntimeError: If the provider is misconfigured (e.g., missing API key).
+    """
+    provider = settings.LLM_PROVIDER.lower().strip()
+    logger.info(f"[LLM] get_llm() — provider={provider!r}")
+
+    if provider == "groq":
+        return _build_groq()
+    elif provider == "openai":
+        return _build_openai()
+    elif provider == "gemini":
+        return _build_gemini()
+    else:
+        return _OllamaDirectWrapper()
+
+
+# ---------------------------------------------------------------------------
+# Public API — call_llm()
 # ---------------------------------------------------------------------------
 
 
@@ -34,148 +75,146 @@ def call_llm(prompt: str, system_prompt: Optional[str] = None) -> str:
     """
     Send a prompt to the configured LLM provider and return the text response.
 
+    This is the primary entry point used by all services.  Internally it calls
+    get_llm() and invokes the model using LangChain message objects (for
+    langchain-compatible providers) or directly via the ollama SDK.
+
     Args:
         prompt: The user message / task description.
-        system_prompt: Optional system instruction. If None, a sensible default
-                       is applied per provider.
+        system_prompt: Optional system instruction.
 
     Returns:
         The model's text response as a plain string.
 
     Raises:
-        RuntimeError: If the provider call fails with a non-retriable error.
+        RuntimeError: If the provider call fails.
     """
     provider = settings.LLM_PROVIDER.lower().strip()
-    logger.info(f"[LLM] Provider={provider!r} | Sending request...")
+    logger.info(f"[LLM] call_llm() — provider={provider!r} | prompt_len={len(prompt)}")
     t = time.monotonic()
 
     try:
-        if provider == "groq":
-            result = _call_groq(prompt, system_prompt)
-        elif provider == "openai":
-            result = _call_openai(prompt, system_prompt)
-        elif provider == "gemini":
-            result = _call_gemini(prompt, system_prompt)
+        if provider == "ollama":
+            # Direct ollama SDK — no LangChain dependency needed for local dev
+            result = _call_ollama_direct(prompt)
         else:
-            # Default: Ollama (local dev)
-            result = _call_ollama(prompt)
+            # LangChain path — works for groq, openai, gemini
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            llm = get_llm()
+            messages = []
+            if system_prompt:
+                messages.append(SystemMessage(content=system_prompt))
+            messages.append(HumanMessage(content=prompt))
+
+            response = llm.invoke(messages)
+            result = response.content
 
         elapsed = time.monotonic() - t
-        logger.info(f"[LLM] Provider={provider!r} | Response received in {elapsed:.2f}s | {len(result)} chars")
+        logger.info(
+            f"[LLM] call_llm() — provider={provider!r} | "
+            f"response received in {elapsed:.2f}s | {len(result)} chars"
+        )
         return result
 
     except Exception as exc:
         elapsed = time.monotonic() - t
         logger.error(
-            f"[LLM] Provider={provider!r} | FAILED after {elapsed:.2f}s: {exc}",
+            f"[LLM] call_llm() — provider={provider!r} | FAILED after {elapsed:.2f}s: {exc}",
             exc_info=True,
         )
         raise RuntimeError(f"LLM provider '{provider}' request failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
-# Provider implementations
+# Provider builders
 # ---------------------------------------------------------------------------
 
 
-def _call_groq(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Call the Groq API (Llama 3 / Mixtral inference)."""
+def _build_groq():
+    """Return a ChatGroq instance (langchain-groq)."""
     try:
-        from groq import Groq
-    except ImportError:
+        from langchain_groq import ChatGroq
+    except ImportError as e:
         raise RuntimeError(
-            "groq package is not installed. Run: pip install groq"
+            "langchain-groq is not installed. Run: pip install langchain-groq"
+        ) from e
+
+    if not settings.GROQ_API_KEY:
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. "
+            "Add it to your Render environment variables."
         )
 
-    api_key = settings.GROQ_API_KEY
-    if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Add it to your environment variables."
-        )
-
-    client = Groq(api_key=api_key)
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=messages,
-        temperature=0.1,
+    logger.info(f"[LLM] Building ChatGroq — model={settings.GROQ_MODEL!r}")
+    return ChatGroq(
+        groq_api_key=settings.GROQ_API_KEY,
+        model_name=settings.GROQ_MODEL,
+        temperature=0,
         max_tokens=4096,
     )
-    return response.choices[0].message.content
 
 
-def _call_openai(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Call the OpenAI Chat Completions API."""
+def _build_openai():
+    """Return a ChatOpenAI instance (langchain-openai)."""
     try:
-        from openai import OpenAI
-    except ImportError:
+        from langchain_openai import ChatOpenAI
+    except ImportError as e:
         raise RuntimeError(
-            "openai package is not installed. Run: pip install openai"
-        )
+            "langchain-openai is not installed. Run: pip install langchain-openai"
+        ) from e
 
-    api_key = settings.OPENAI_API_KEY
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set. Add it to your environment variables."
-        )
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
 
-    client = OpenAI(api_key=api_key)
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    response = client.chat.completions.create(
+    logger.info(f"[LLM] Building ChatOpenAI — model={settings.OPENAI_MODEL!r}")
+    return ChatOpenAI(
+        openai_api_key=settings.OPENAI_API_KEY,
         model=settings.OPENAI_MODEL,
-        messages=messages,
-        temperature=0.1,
+        temperature=0,
         max_tokens=4096,
     )
-    return response.choices[0].message.content
 
 
-def _call_gemini(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Call the Google Gemini API."""
+def _build_gemini():
+    """Return a ChatGoogleGenerativeAI instance (langchain-google-genai)."""
     try:
-        import google.generativeai as genai
-    except ImportError:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError as e:
         raise RuntimeError(
-            "google-generativeai package is not installed. "
-            "Run: pip install google-generativeai"
-        )
+            "langchain-google-genai is not installed. "
+            "Run: pip install langchain-google-genai"
+        ) from e
 
-    api_key = settings.GEMINI_API_KEY
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. Add it to your environment variables."
-        )
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(settings.GEMINI_MODEL)
-
-    full_prompt = prompt
-    if system_prompt:
-        full_prompt = f"{system_prompt}\n\n{prompt}"
-
-    response = model.generate_content(full_prompt)
-    return response.text
+    logger.info(f"[LLM] Building ChatGoogleGenerativeAI — model={settings.GEMINI_MODEL!r}")
+    return ChatGoogleGenerativeAI(
+        google_api_key=settings.GEMINI_API_KEY,
+        model=settings.GEMINI_MODEL,
+        temperature=0,
+    )
 
 
-def _call_ollama(prompt: str) -> str:
-    """Call a local Ollama instance (development only)."""
+# ---------------------------------------------------------------------------
+# Ollama direct path (local dev, no LangChain dependency)
+# ---------------------------------------------------------------------------
+
+
+def _call_ollama_direct(prompt: str) -> str:
+    """Call a local Ollama instance using the ollama SDK (development only)."""
     try:
         import ollama
-    except ImportError:
+    except ImportError as e:
         raise RuntimeError(
-            "ollama package is not installed. Run: pip install ollama"
-        )
+            "ollama package is not installed. Run: pip install ollama\n"
+            "Note: For production use LLM_PROVIDER=groq instead."
+        ) from e
 
+    logger.info(
+        f"[LLM] Calling Ollama at {settings.OLLAMA_BASE_URL} — model={settings.OLLAMA_MODEL!r}"
+    )
     response = ollama.chat(
         model=settings.OLLAMA_MODEL,
         messages=[{"role": "user", "content": prompt}],
@@ -183,8 +222,37 @@ def _call_ollama(prompt: str) -> str:
     return response["message"]["content"]
 
 
+class _OllamaDirectWrapper:
+    """
+    Thin wrapper around the ollama SDK that exposes a LangChain-compatible
+    .invoke(messages) interface.  Used when LLM_PROVIDER=ollama so that
+    get_llm() always returns something invocable.
+    """
+
+    class _FakeAIMessage:
+        """Mimics langchain_core.messages.AIMessage.content."""
+        def __init__(self, content: str):
+            self.content = content
+
+    def invoke(self, messages) -> "_OllamaDirectWrapper._FakeAIMessage":
+        # Extract text content from LangChain message objects or plain dicts
+        if messages:
+            last = messages[-1]
+            if hasattr(last, "content"):
+                prompt = last.content
+            elif isinstance(last, dict):
+                prompt = last.get("content", "")
+            else:
+                prompt = str(last)
+        else:
+            prompt = ""
+
+        text = _call_ollama_direct(prompt)
+        return self._FakeAIMessage(content=text)
+
+
 # ---------------------------------------------------------------------------
-# Health check helper
+# Health check helper  (used by GET /api/v1/health)
 # ---------------------------------------------------------------------------
 
 
@@ -192,11 +260,11 @@ def check_llm_health() -> dict:
     """
     Verify the configured LLM provider is reachable and functional.
 
-    Returns:
+    Returns a dict:
         {
-            "status": "healthy" | "unhealthy",
-            "provider": "groq",
-            "detail": "Groq API reachable — model: llama3-8b-8192"
+            "status":   "healthy" | "unhealthy",
+            "provider": "groq" | "openai" | "gemini" | "ollama",
+            "detail":   "Groq API reachable — model: llama3-8b-8192"
         }
     """
     provider = settings.LLM_PROVIDER.lower().strip()
@@ -212,7 +280,7 @@ def check_llm_health() -> dict:
         else:
             return _health_ollama()
     except Exception as exc:
-        logger.error(f"[LLM Health] {provider!r} check failed: {exc}")
+        logger.error(f"[LLM Health] {provider!r} check raised: {exc}")
         return {
             "status": "unhealthy",
             "provider": provider,
@@ -222,28 +290,30 @@ def check_llm_health() -> dict:
 
 def _health_groq() -> dict:
     try:
-        from groq import Groq
+        from langchain_groq import ChatGroq
     except ImportError:
         return {
             "status": "unhealthy",
             "provider": "groq",
-            "detail": "groq package not installed",
+            "detail": "langchain-groq not installed — run: pip install langchain-groq",
         }
 
     if not settings.GROQ_API_KEY:
         return {
             "status": "unhealthy",
             "provider": "groq",
-            "detail": "GROQ_API_KEY not set",
+            "detail": "GROQ_API_KEY not set in environment variables",
         }
 
-    client = Groq(api_key=settings.GROQ_API_KEY)
-    # Minimal token call to verify API key validity
-    client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=[{"role": "user", "content": "ping"}],
+    # Minimal ping to verify API key and connectivity
+    from langchain_core.messages import HumanMessage
+    llm = ChatGroq(
+        groq_api_key=settings.GROQ_API_KEY,
+        model_name=settings.GROQ_MODEL,
+        temperature=0,
         max_tokens=1,
     )
+    llm.invoke([HumanMessage(content="ping")])
     return {
         "status": "healthy",
         "provider": "groq",
@@ -253,12 +323,12 @@ def _health_groq() -> dict:
 
 def _health_openai() -> dict:
     try:
-        from openai import OpenAI
+        from langchain_openai import ChatOpenAI
     except ImportError:
         return {
             "status": "unhealthy",
             "provider": "openai",
-            "detail": "openai package not installed",
+            "detail": "langchain-openai not installed",
         }
 
     if not settings.OPENAI_API_KEY:
@@ -268,12 +338,14 @@ def _health_openai() -> dict:
             "detail": "OPENAI_API_KEY not set",
         }
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    client.chat.completions.create(
+    from langchain_core.messages import HumanMessage
+    llm = ChatOpenAI(
+        openai_api_key=settings.OPENAI_API_KEY,
         model=settings.OPENAI_MODEL,
-        messages=[{"role": "user", "content": "ping"}],
+        temperature=0,
         max_tokens=1,
     )
+    llm.invoke([HumanMessage(content="ping")])
     return {
         "status": "healthy",
         "provider": "openai",
@@ -283,12 +355,12 @@ def _health_openai() -> dict:
 
 def _health_gemini() -> dict:
     try:
-        import google.generativeai as genai
+        from langchain_google_genai import ChatGoogleGenerativeAI
     except ImportError:
         return {
             "status": "unhealthy",
             "provider": "gemini",
-            "detail": "google-generativeai package not installed",
+            "detail": "langchain-google-genai not installed",
         }
 
     if not settings.GEMINI_API_KEY:
@@ -298,9 +370,13 @@ def _health_gemini() -> dict:
             "detail": "GEMINI_API_KEY not set",
         }
 
-    genai.configure(api_key=settings.GEMINI_API_KEY)
-    model = genai.GenerativeModel(settings.GEMINI_MODEL)
-    model.generate_content("ping")
+    from langchain_core.messages import HumanMessage
+    llm = ChatGoogleGenerativeAI(
+        google_api_key=settings.GEMINI_API_KEY,
+        model=settings.GEMINI_MODEL,
+        temperature=0,
+    )
+    llm.invoke([HumanMessage(content="ping")])
     return {
         "status": "healthy",
         "provider": "gemini",
@@ -317,7 +393,10 @@ def _health_ollama() -> dict:
             return {
                 "status": "healthy",
                 "provider": "ollama",
-                "detail": f"Ollama reachable at {settings.OLLAMA_BASE_URL} — model: {settings.OLLAMA_MODEL}",
+                "detail": (
+                    f"Ollama reachable at {settings.OLLAMA_BASE_URL} "
+                    f"— model: {settings.OLLAMA_MODEL}"
+                ),
             }
         return {
             "status": "unhealthy",
