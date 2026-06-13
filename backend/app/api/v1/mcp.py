@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.mcp.google_drive import GoogleDriveMCPSource
 from app.mcp.local_files import LocalFilesMCPSource
 from app.mcp.notion import NotionMCPSource
+from app.mcp.sync_tracker import MCPSyncTracker
 from app.models.user import User
 from app.services.rag_service import chunk_text, store_document_chunks
 
@@ -70,6 +71,7 @@ def sync_all_sources(_admin: User = Depends(get_admin)):
     for source in _SOURCES:
         errors: list[str] = []
         ingested = 0
+        total_chunks_source=0
 
         if not source.is_configured():
             results.append(
@@ -83,11 +85,11 @@ def sync_all_sources(_admin: User = Depends(get_admin)):
             continue
 
         try:
+            logger.info(f"[{source.source_name}] Before fetch_documents()")
             documents = source.fetch_documents()
+            logger.info(f"[{source.source_name}] After fetch_documents() - Found {len(documents)} docs")
         except Exception as exc:
-            logger.error(
-                f"MCP sync error [{source.source_name}]: {exc}", exc_info=True
-            )
+            logger.exception(f"MCP sync error [{source.source_name}] during fetch_documents: {exc}")
             results.append(
                 SyncResult(
                     source=source.source_name,
@@ -100,20 +102,39 @@ def sync_all_sources(_admin: User = Depends(get_admin)):
 
         for doc in documents:
             try:
+                logger.info(f"[{source.source_name}] Before chunking '{doc.title}'")
                 chunks = chunk_text(doc.content)
+                logger.info(f"[{source.source_name}] After chunking '{doc.title}' - Created {len(chunks)} chunks")
+                
+                logger.info(f"[{source.source_name}] Before Chroma insert '{doc.title}'")
                 store_document_chunks(
                     chunks,
                     filename=f"{source.source_name}:{doc.title}",
                     document_type=doc.document_type,
                 )
+                logger.info(f"[{source.source_name}] After Chroma insert '{doc.title}'")
+                
                 ingested += 1
+                total_chunks_source += len(chunks)
             except Exception as exc:
-                logger.error(
-                    f"MCP ingest error [{source.source_name}/{doc.title}]: {exc}"
-                )
+                logger.exception(f"MCP ingest error [{source.source_name}/{doc.title}]: {exc}")
                 errors.append(f"{doc.title}: {exc}")
 
         total_ingested += ingested
+        
+        try:
+            tracker = MCPSyncTracker()
+            logger.info(f"[{source.source_name}] Before tracker.record_sync()")
+            tracker.record_sync(
+                source_name=source.source_name,
+                status="success",
+                documents_count=getattr(source, 'last_total_found', len(documents)),
+                chunks_count=total_chunks_source
+            )
+            logger.info(f"[{source.source_name}] After tracker.record_sync()")
+        except Exception as exc:
+            logger.exception(f"[{source.source_name}] Error during tracker.record_sync: {exc}")
+        
         results.append(
             SyncResult(
                 source=source.source_name,
@@ -122,9 +143,7 @@ def sync_all_sources(_admin: User = Depends(get_admin)):
                 errors=errors,
             )
         )
-        logger.info(
-            f"MCP sync [{source.source_name}]: {ingested} documents ingested"
-        )
+        logger.info(f"MCP sync [{source.source_name}]: {ingested} documents ingested")
 
     logger.info(f"MCP sync complete: {total_ingested} total documents ingested")
     return SyncResponse(total_documents_ingested=total_ingested, results=results)
@@ -143,50 +162,26 @@ class MCPStatsResponse(BaseModel):
 )
 def get_mcp_stats(_admin: User = Depends(get_admin)):
     """Returns knowledge source metrics for the dashboard widget."""
-    from app.services.rag_service import _collection
-    
+    tracker = MCPSyncTracker()
     stats = {}
     sources = ["local_files", "google_drive", "notion"]
     
-    try:
-        results = _collection.get(include=["metadatas"])
-        metadatas = results.get("metadatas") or []
-        
-        for source_name in sources:
-            source_metas = [m for m in metadatas if m and m.get("source") == source_name]
+    for source_name in sources:
+        is_connected = False
+        if source_name == "local_files":
+            is_connected = True
+        elif source_name == "google_drive":
+            is_connected = GoogleDriveMCPSource().is_configured()
+        elif source_name == "notion":
+            is_connected = NotionMCPSource().is_configured()
             
-            # Count unique documents by looking at notion_page_id or drive_file_id or filename
-            unique_docs = set()
-            for m in source_metas:
-                if m.get("notion_page_id"):
-                    unique_docs.add(m.get("notion_page_id"))
-                elif m.get("drive_file_id"):
-                    unique_docs.add(m.get("drive_file_id"))
-                elif m.get("filename"):
-                    unique_docs.add(m.get("filename"))
-                    
-            is_connected = False
-            if source_name == "local_files":
-                is_connected = True
-            elif source_name == "google_drive":
-                is_connected = GoogleDriveMCPSource().is_configured()
-            elif source_name == "notion":
-                is_connected = NotionMCPSource().is_configured()
-                
-            stats[source_name] = MCPStatsResponse(
-                sources_connected=1 if is_connected else 0,
-                total_documents=len(unique_docs),
-                total_chunks=len(source_metas),
-                last_sync="Recently" if source_metas else "Never"
-            )
-            
-    except Exception as exc:
-        logger.error(f"Failed to fetch MCP stats from ChromaDB: {exc}")
-        # Return empty stats on failure
-        for source_name in sources:
-            stats[source_name] = MCPStatsResponse(
-                sources_connected=0, total_documents=0, total_chunks=0, last_sync="Error"
-            )
+        source_stats = tracker.get_stats(source_name)
+        stats[source_name] = MCPStatsResponse(
+            sources_connected=1 if is_connected else 0,
+            total_documents=source_stats.get("documents_count", 0),
+            total_chunks=source_stats.get("chunks_count", 0),
+            last_sync=source_stats.get("last_sync", "Never")
+        )
             
     return stats
 
@@ -244,18 +239,13 @@ def sync_google_drive(_admin: User = Depends(get_admin)):
         )
 
     try:
-        # fetch_documents now returns only the NEW documents
-        # We need the source to tell us how many were skipped
-        # Since fetch_documents returns list[MCPDocument], we can't easily get skipped count
-        # without changing the interface. For now, we'll just return it as 0 if we don't know,
-        # but wait, let's change fetch_documents in google_drive.py first to return skipped.
-        # Actually, let's just return what we have.
+        logger.info("[Google Drive] Before fetch_documents()")
         documents = _google_drive_source.fetch_documents()
-        # Wait, if we want to get the skipped count from the logs, we can just read the class state if we add it.
+        logger.info(f"[Google Drive] After fetch_documents() - Found {len(documents)} docs")
         skipped_count = getattr(_google_drive_source, 'last_skipped_count', 0)
         total_found = getattr(_google_drive_source, 'last_total_found', len(documents))
     except Exception as exc:
-        logger.error(f"Google Drive sync error: {exc}", exc_info=True)
+        logger.exception(f"Google Drive sync error during fetch_documents: {exc}")
         from fastapi import HTTPException, status as http_status
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -267,24 +257,41 @@ def sync_google_drive(_admin: User = Depends(get_admin)):
 
     for doc in documents:
         try:
+            logger.info(f"[Google Drive] Before chunking '{doc.title}'")
             chunks = chunk_text(doc.content)
+            logger.info(f"[Google Drive] After chunking '{doc.title}' - Created {len(chunks)} chunks")
+            
+            logger.info(f"[Google Drive] Before Chroma insert '{doc.title}'")
             store_document_chunks(
                 chunks,
                 filename=doc.title,
                 document_type=doc.document_type,
                 extra_metadata=doc.metadata or {},
             )
+            logger.info(f"[Google Drive] After Chroma insert '{doc.title}'")
+            
             total_chunks += len(chunks)
             processed += 1
         except Exception as exc:
-            logger.error(
-                f"Google Drive ingest error [{doc.title}]: {exc}"
-            )
+            logger.exception(f"Google Drive ingest error [{doc.title}]: {exc}")
 
     logger.info(
         f"Google Drive sync complete: {processed}/{len(documents)} documents processed, "
         f"{total_chunks} chunks created."
     )
+
+    try:
+        tracker = MCPSyncTracker()
+        logger.info("[Google Drive] Before tracker.record_sync()")
+        tracker.record_sync(
+            source_name="google_drive",
+            status="success",
+            documents_count=total_found,
+            chunks_count=total_chunks
+        )
+        logger.info("[Google Drive] After tracker.record_sync()")
+    except Exception as exc:
+        logger.exception(f"[Google Drive] Error during tracker.record_sync: {exc}")
 
     return GoogleDriveSyncResponse(
         documents_found=total_found,
@@ -366,11 +373,13 @@ def sync_notion(_admin: User = Depends(get_admin)):
         )
 
     try:
+        logger.info("[Notion] Before fetch_documents()")
         documents = _notion_source.fetch_documents()
+        logger.info(f"[Notion] After fetch_documents() - Found {len(documents)} docs")
         skipped_count = getattr(_notion_source, 'last_skipped_count', 0)
         total_found = getattr(_notion_source, 'last_total_found', len(documents))
     except Exception as exc:
-        logger.error(f"Notion sync error: {exc}", exc_info=True)
+        logger.exception(f"Notion sync error during fetch_documents: {exc}")
         from fastapi import HTTPException, status as http_status
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -382,22 +391,41 @@ def sync_notion(_admin: User = Depends(get_admin)):
 
     for doc in documents:
         try:
+            logger.info(f"[Notion] Before chunking '{doc.title}'")
             chunks = chunk_text(doc.content)
+            logger.info(f"[Notion] After chunking '{doc.title}' - Created {len(chunks)} chunks")
+            
+            logger.info(f"[Notion] Before Chroma insert '{doc.title}'")
             store_document_chunks(
                 chunks,
                 filename=doc.title,
                 document_type=doc.document_type,
                 extra_metadata=doc.metadata or {},
             )
+            logger.info(f"[Notion] After Chroma insert '{doc.title}'")
+            
             total_chunks += len(chunks)
             processed += 1
         except Exception as exc:
-            logger.error(f"Notion ingest error [{doc.title}]: {exc}")
+            logger.exception(f"Notion ingest error [{doc.title}]: {exc}")
 
     logger.info(
         f"Notion sync complete: {processed}/{len(documents)} documents processed, "
         f"{total_chunks} chunks created."
     )
+
+    try:
+        tracker = MCPSyncTracker()
+        logger.info("[Notion] Before tracker.record_sync()")
+        tracker.record_sync(
+            source_name="notion",
+            status="success",
+            documents_count=total_found,
+            chunks_count=total_chunks
+        )
+        logger.info("[Notion] After tracker.record_sync()")
+    except Exception as exc:
+        logger.exception(f"[Notion] Error during tracker.record_sync: {exc}")
 
     return NotionSyncResponse(
         documents_found=total_found,
@@ -424,3 +452,31 @@ def verify_notion_connection(_admin: User = Depends(get_admin)):
         database_accessible=result.get("database_accessible", False),
         message=result["message"],
     )
+
+@router.get(
+    "/debug",
+    summary="Get detailed diagnostic status of MCP integrations",
+)
+def debug_mcp(_admin: User = Depends(get_admin)):
+    tracker = MCPSyncTracker()
+    from app.services.rag_service import _collection
+    
+    try:
+        collection_docs = _collection.count()
+    except Exception:
+        collection_docs = 0
+
+    return {
+        "tracker": {
+            "google_drive": tracker.get_stats("google_drive"),
+            "notion": tracker.get_stats("notion")
+        },
+        "chromadb": {
+            "total_chunks": collection_docs,
+            "collection_name": _collection.name
+        },
+        "configuration": {
+            "google_drive": GoogleDriveMCPSource().is_configured(),
+            "notion": NotionMCPSource().is_configured()
+        }
+    }

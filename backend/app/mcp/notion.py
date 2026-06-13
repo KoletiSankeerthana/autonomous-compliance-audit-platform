@@ -45,7 +45,16 @@ class NotionMCPSource(MCPSource):
 
         try:
             client = Client(auth=settings.NOTION_API_TOKEN)
+            
+            # Fetch database info to log the title
+            db_info = client.databases.retrieve(database_id=settings.NOTION_DATABASE_ID)
+            title = "Unknown Database"
+            if "title" in db_info:
+                title = "".join(part.get("plain_text", "") for part in db_info["title"])
+            logger.info(f"[Notion] Database detected: '{title}' (id={settings.NOTION_DATABASE_ID})")
+
             pages = self._list_pages(client)
+            logger.info(f"[Notion] Pages found: {len(pages)} pages in database")
         except Exception as exc:
             logger.error(f"Notion MCP: failed to list pages: {exc}")
             return []

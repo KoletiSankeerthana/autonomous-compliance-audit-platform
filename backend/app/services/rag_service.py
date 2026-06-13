@@ -19,10 +19,24 @@ logger = get_logger(__name__)
 # ChromaDB client (module-level singleton)
 # ---------------------------------------------------------------------------
 
+def get_embedding_function():
+    from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
+    
+    if settings.GEMINI_API_KEY:
+        try:
+            return GoogleGenerativeAiEmbeddingFunction(api_key=settings.GEMINI_API_KEY)
+        except Exception as exc:
+            logger.error(f"Failed to load Gemini embeddings: {exc}")
+    
+    logger.warning("No valid API key found for embeddings. Falling back to default local ONNX model (may cause OOM).")
+    return None
+
 _client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
 _collection = _client.get_or_create_collection(
-    name=settings.CHROMA_COLLECTION_NAME
+    name=settings.CHROMA_COLLECTION_NAME,
+    embedding_function=get_embedding_function()
 )
+logger.info(f"Collection created / retrieved: '{settings.CHROMA_COLLECTION_NAME}'")
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +229,8 @@ def store_document_chunks(
         metadatas=[dict(base_meta) for _ in chunks],
         ids=[str(uuid4()) for _ in chunks],
     )
+    logger.info(f"Chunk count inserted: {len(chunks)}")
+    logger.info(f"Vector count inserted: {len(chunks)}")
     logger.info(
         f"Stored {len(chunks)} chunks | filename={filename} | type={document_type}"
         + (f" | extra={list(extra_metadata.keys())}" if extra_metadata else "")
