@@ -21,15 +21,27 @@ logger = get_logger(__name__)
 
 def get_embedding_function():
     from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
+    import os
     
-    if settings.GEMINI_API_KEY:
+    # Check both pydantic settings and direct OS environment variables
+    # (Google officially uses GOOGLE_API_KEY, but we check GEMINI_API_KEY to match our config)
+    api_key = getattr(settings, 'GEMINI_API_KEY', None) or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    
+    if api_key and api_key.strip() and api_key.strip() not in ('""', "''"):
         try:
-            return GoogleGenerativeAiEmbeddingFunction(api_key=settings.GEMINI_API_KEY)
+            logger.info("Initializing Google Gemini embeddings via chromadb...")
+            return GoogleGenerativeAiEmbeddingFunction(api_key=api_key.strip())
         except Exception as exc:
             logger.error(f"Failed to load Gemini embeddings: {exc}")
     
-    logger.warning("No valid API key found for embeddings. Falling back to default local ONNX model (may cause OOM).")
-    return None
+    logger.warning("No valid GEMINI_API_KEY found for embeddings. Using DummyEmbeddingFunction to prevent ONNX OOM crash.")
+    
+    from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
+    class DummyEmbeddingFunction(EmbeddingFunction):
+        def __call__(self, input: Documents) -> Embeddings:
+            raise ValueError("GEMINI_API_KEY is missing! Embeddings cannot be generated.")
+            
+    return DummyEmbeddingFunction()
 
 _client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
 _collection = _client.get_or_create_collection(

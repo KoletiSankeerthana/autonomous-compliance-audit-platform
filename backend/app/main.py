@@ -369,6 +369,7 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # ---------------------------------------------------------------------------
 
 @app.get("/", tags=["System"])
+@app.head("/", tags=["System"])
 def root():
     return {
         "platform": settings.APP_NAME,
