@@ -87,4 +87,4 @@ watchfiles
 websocket-client
 websockets
 yarl
-google-generativeai
+
