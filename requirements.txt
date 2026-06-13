@@ -101,3 +101,4 @@ pdfplumber>=0.11.0
 pytesseract>=0.3.10
 pypdfium2>=5.0.0
 google-generativeai>=0.5.2
+google-generativeai>=0.8.0
